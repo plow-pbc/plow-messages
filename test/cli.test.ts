@@ -1,13 +1,8 @@
 /**
- * plow-messages, RUN.
- *
- * The built Swift CLI against a chat.db-shaped store whose modern rows carry
- * REAL typedstream bodies captured from a live archive. This is the suite that
- * would have caught #385: every assertion here is on a row whose `text` column
- * is NULL, which is the shape a hand-written `select ... from message where
- * text like ?` reports as "no such message".
- *
- * Mac-only because the binary is Swift.
+ * The built Swift CLI against a chat.db-shaped store. Every assertion here is
+ * on a row whose `text` column is NULL, the shape a hand-written `select ...
+ * from message where text like ?` misses (#385) — Mac-only because the
+ * binary is Swift.
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
@@ -22,8 +17,8 @@ const itMac = it.skipIf(!ON_MAC);
 const REPO = fileURLToPath(new URL("../", import.meta.url));
 const BIN = path.join(REPO, "dist", "plow-messages");
 
-/** What the two captured blobs decode to. Asserted rather than described: the
- *  decode is the whole point of the CLI existing. */
+/** What the two captured blobs decode to — asserted, since the decode is the
+ *  whole point of the CLI existing. */
 const DELIVERED = "Your order was delivered! Thank you for ordering from Super Duper Burgers.";
 const COSTCO =
   "Your Costco order will arrive shortly! Your shopper will follow any instructions you may have left for delivery.";
@@ -41,9 +36,8 @@ beforeAll(() => {
 type Row = Record<string, string | number | boolean | null>;
 
 /** Run the CLI and parse its JSON Lines, or report how it refused. TZ is
- *  pinned for the same reason the recipe suite pins it: `at` renders in this
- *  Mac's zone, and an assertion on it otherwise passes or fails on where the
- *  suite runs. */
+ *  pinned: `at` renders in this Mac's zone, and an assertion on it otherwise
+ *  passes or fails on where the suite runs. */
 function cli(...args: string[]): { rows: Row[]; stdout: string; stderr: string; code: number } {
   try {
     const out = execFileSync(BIN, ["--store", store, ...args], {
@@ -72,8 +66,7 @@ describe("plow-messages search", () => {
   });
 
   itMac("treats the phrase as a substring, never as a pattern", () => {
-    // `%` and `_` are SQL LIKE wildcards and `.*` is a regex: a CLI that
-    // leaked any of them through would match both fixture rows here.
+    // `%`/`_` are SQL LIKE wildcards and `.*` is a regex: a leak would match both fixture rows.
     for (const pattern of ["%order%", "order_", ".*order.*"]) {
       expect(cli("search", pattern).rows, `"${pattern}" matched as a pattern`).toEqual([]);
     }
@@ -86,9 +79,7 @@ describe("plow-messages search", () => {
   });
 
   itMac("never surfaces a tapback, whose body reads like a message", () => {
-    // 6003 is `associated_message_type = 2000` and its text is "Loved an
-    // image" — a row an agent would otherwise report as something someone
-    // said.
+    // 6003 is a tapback (`associated_message_type = 2000`) whose text reads like something someone said.
     expect(cli("search", "Loved").rows).toEqual([]);
   });
 
@@ -107,15 +98,12 @@ describe("plow-messages search", () => {
   itMac("says nothing rather than something wrong when the archive has no such row", () => {
     const { rows, code } = cli("search", "nothing in this archive says this");
     expect(rows).toEqual([]);
-    // Zero rows is a SUCCESS: an empty archive answer and a failed read must
-    // not look alike to a caller that only checks the exit code.
+    // Zero rows is a SUCCESS: an empty answer and a failed read must not look alike to a caller checking only the exit code.
     expect(code).toBe(0);
   });
 
   itMac.each([
-    // The filters that scope a search, each asserted by what it EXCLUDES —
-    // a filter that silently passes everything looks identical to one that
-    // works when only the included row is checked.
+    // Each filter is asserted by what it EXCLUDES — a filter that silently passes everything looks identical to one that works.
     { name: "--chat-id", args: ["--chat-id", "40"], expect: [6002, 6001] },
     { name: "--chat-id elsewhere", args: ["--chat-id", "1"], expect: [] },
     { name: "--after-rowid", args: ["--after-rowid", "6001"], expect: [6002] },
@@ -124,28 +112,21 @@ describe("plow-messages search", () => {
   });
 
   itMac("bounds a search by date, excluding what falls outside the window", () => {
-    // 6001 is ~3000s old and 6002 ~2000s; a boundary between them must keep
-    // one and drop the other, in both directions.
+    // 6001 is ~3000s old, 6002 ~2000s; a boundary between them must keep one and drop the other, both directions.
     const between = new Date(Date.now() - 2500 * 1000).toISOString().replace(/\.\d+Z$/, "Z");
     expect(cli("search", "order", "--after", between).rows.map((r) => r.rowid)).toEqual([6002]);
     expect(cli("search", "order", "--before", between).rows.map((r) => r.rowid)).toEqual([6001]);
   });
 
   itMac("browses a chat with no phrase at all, bodiless rows included", () => {
-    // The no-phrase path is a SEPARATE branch from the phrase match, and it is
-    // where a bodiless row has to appear: with nothing to match against, a
-    // reader that still required a decoded body would hand back a chat with
-    // holes in it. Newest first, tapback excluded.
+    // The no-phrase path is where a bodiless row has to appear. Newest first, tapback excluded.
     const rows = cli("search", "--chat-id", "40").rows;
     expect(rows.map((r) => r.rowid)).toEqual([6002, 6005, 6004, 6001]);
     expect(rows.filter((r) => r.body === null).map((r) => r.rowid)).toEqual([6005, 6004]);
   });
 
   itMac.each([
-    // A limit that is not a limit. SQLite reads a negative LIMIT as
-    // UNBOUNDED, so `chats --limit -1` used to return everything while
-    // `search --limit -1` returned nothing — the same argument doing opposite
-    // things. Both refuse now.
+    // SQLite reads a negative LIMIT as UNBOUNDED; `chats`/`search`/`thread` all refuse now.
     ["search", ["search", "order", "--limit", "-1"]],
     ["chats", ["chats", "--limit", "-1"]],
     ["thread", ["thread", "--chat-id", "40", "--limit", "0"]],
@@ -172,10 +153,7 @@ describe("plow-messages search", () => {
 
 describe("plow-messages and a body it cannot read", () => {
   itMac("survives a malformed typedstream blob instead of aborting the process", () => {
-    // Before the ObjC shim in plow-messages-bridge.h, NSUnarchiver RAISED on
-    // this blob and the uncaught NSException killed the process — so one
-    // crafted message, from anyone who can text the owner, broke every query
-    // that touched its row. The whole thread still has to come back.
+    // Before the bridging shim, an uncaught NSException from this blob killed the process.
     const { rows, code } = cli("thread", "--chat-id", "40");
     expect(code).toBe(0);
     expect(rows.map((r) => r.rowid)).toContain(6004);
@@ -187,9 +165,7 @@ describe("plow-messages and a body it cannot read", () => {
   });
 
   itMac("still names a chat whose newest message is an attachment as unreplied", () => {
-    // The silent omission this CLI exists to end, relocated: `unreplied`
-    // selects exactly ONE row per chat, so dropping a bodiless row would take
-    // the entire chat out of the answer.
+    // `unreplied` selects exactly ONE row per chat, so dropping a bodiless row would take the entire chat out of the answer.
     expect(cli("unreplied").rows.map((r) => r.chat_guid)).toContain("chat-guid-41");
   });
 
@@ -201,17 +177,15 @@ describe("plow-messages and a body it cannot read", () => {
 describe("plow-messages thread", () => {
   itMac("reads oldest first and drops the tapback", () => {
     const rows = cli("thread", "--chat-id", "40").rows;
-    // Oldest first, the tapback (6003) gone, and the two unreadable rows
-    // (6004 malformed, 6005 attachment-only) still present in their places —
-    // a thread with a hole in it reads as a conversation that did not happen.
+    // Oldest first, tapback (6003) gone, and the two unreadable rows (6004
+    // malformed, 6005 attachment-only) still present in their places.
     expect(rows.map((r) => r.rowid)).toEqual([6001, 6004, 6005, 6002]);
     expect(rows.map((r) => r.body)).toEqual([DELIVERED, null, null, COSTCO]);
   });
 
   itMac("reads a person's direct chat by handle, never a group they are in", () => {
-    // +15625550000 posts in group 30 (5001/5002/5004/5005) and has a direct
-    // chat 31 (5101). The approval card names a person; a group is other
-    // people's conversation and needs --chat-id from `chats`.
+    // +15625550000 posts in group 30 (5001) and has a direct chat 31 (5101);
+    // a group is other people's conversation and needs --chat-id from `chats`.
     expect(cli("thread", "--handle", "+15625550000").rows.map((r) => r.rowid)).toEqual([5101]);
     // Every --handle is matched, not just the first: two direct chats, oldest first.
     expect(cli("thread", "--handle", "+15625550000", "--handle", "+15557777777").rows.map((r) => r.rowid)).toEqual([5101, 6101]);
@@ -236,19 +210,15 @@ describe("plow-messages chats", () => {
     const deliveries = rows.find((r) => r.chat_id === 40);
     expect(deliveries).toMatchObject({ guid: "chat-guid-40", kind: "group", display_name: "Deliveries" });
     expect(rows.find((r) => r.chat_id === 1)).toMatchObject({ kind: "direct" });
-    // chat 43's identifier is an email handle that starts with "chat"
-    // (chatty@example.com), yet its style says one-to-one: kind is decided by
-    // `chat.style`, never guessed from the identifier's text.
+    // chat 43's identifier starts with "chat" (chatty@example.com) yet its
+    // style says one-to-one: kind is decided by `chat.style`, never the text.
     expect(rows.find((r) => r.chat_id === 43)).toMatchObject({ kind: "direct" });
   });
 });
 
 describe("plow-messages chats", () => {
   itMac("ranks on real messages, so a reaction cannot make a chat look active", () => {
-    // chat 42 holds one tapback and nothing else, and it is the newest row in
-    // the store — without the real-rows filter it sorts first and reports the
-    // reaction's time as `last_message`. A chat with nothing but reactions is
-    // a chat nobody has spoken in.
+    // chat 42 holds only a tapback and is the newest row in the store.
     expect(cli("chats").rows.map((r) => r.guid)).not.toContain("chat-guid-42");
   });
 
@@ -263,16 +233,13 @@ describe("plow-messages chats", () => {
 describe("plow-messages unreplied", () => {
   itMac("lists a direct chat awaiting a reply and no group chat", () => {
     const guids = cli("unreplied").rows.map((r) => r.chat_guid);
-    // chat 4's newest real row is inbound text; chat 10's and chat 41's are
-    // inbound with NO readable body (a non-typedstream blob and an attachment)
-    // — all three are awaiting a reply, and a reader that required a decoded
-    // body reported only the first. chat 43 is a direct chat whose identifier
-    // starts with "chat" (an email handle) and must still qualify: kind is
-    // decided by `chat.style`, not by pattern-matching the identifier.
+    // chat 4's newest real row is inbound text; chat 10's and chat 41's have
+    // NO readable body (an undecodable blob, an attachment) yet still
+    // qualify. chat 43's identifier starts with "chat" but must still read
+    // as direct: kind is decided by `chat.style`.
     expect(new Set(guids)).toEqual(
       new Set(["chat-guid-4", "chat-guid-10", "chat-guid-41", "chat-guid-43"]));
-    // chat 3's newest is outbound, chat 5's is a tapback over an outbound, and
-    // chat 6 is a group — none qualify.
+    // chat 3's newest is outbound, chat 5's is a tapback, chat 6 is a group — none qualify.
     for (const excluded of ["chat-guid-3", "chat-guid-5", "chat-guid-6"]) {
       expect(guids).not.toContain(excluded);
     }
@@ -296,9 +263,7 @@ describe("plow-messages contract", () => {
   });
 
   itMac("exits 1, not 2, when the store cannot be read", () => {
-    // The two failures have different remedies — a usage error is the
-    // caller's, an unreadable store is usually a missing Full Disk Access
-    // grant — so they must not share an exit code.
+    // The two failures have different remedies, so exit codes must differ.
     const missing = path.join(os.tmpdir(), "plow-messages-absent", "chat.db");
     try {
       execFileSync(BIN, ["--store", missing, "chats"], { encoding: "utf8" });
