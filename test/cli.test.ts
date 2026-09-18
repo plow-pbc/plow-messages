@@ -208,8 +208,17 @@ describe("plow-messages thread", () => {
     expect(rows.map((r) => r.body)).toEqual([DELIVERED, null, null, COSTCO]);
   });
 
-  itMac("finds the chat from a handle, so an agent never has to guess a chat id", () => {
-    expect(cli("thread", "--handle", "36246").rows.map((r) => r.rowid)).toEqual([6001, 6004, 6005, 6002]);
+  itMac("reads a person's direct chat by handle, never a group they are in", () => {
+    // +15625550000 posts in group 30 (5001/5002/5004/5005) and has a direct
+    // chat 31 (5101). The approval card names a person; a group is other
+    // people's conversation and needs --chat-id from `chats`.
+    expect(cli("thread", "--handle", "+15625550000").rows.map((r) => r.rowid)).toEqual([5101]);
+  });
+
+  itMac("reads nothing for a handle that is only ever in groups", () => {
+    const { rows, code } = cli("thread", "--handle", "36246");
+    expect(code).toBe(0);
+    expect(rows).toEqual([]);
   });
 
   itMac("refuses without a chat or a handle rather than reading every chat", () => {

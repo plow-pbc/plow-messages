@@ -1,11 +1,11 @@
 // plow-messages — the owner's iMessage archive, read correctly.
 //
-// A first-party provider CLI (plow-pbc/latch#167), driven through
-// `plow_run_command` behind an argv allowlist. It exists because the traps in
-// this store live in the SUBSTRATE, and prose cannot protect an agent nobody
-// controls: on 2026-09-14 a production agent ignored the SQL recipe, queried
-// `message.text`, and told the owner a message did not exist that the agent
-// itself had sent (#385).
+// A Latch plugin (plow-pbc/latch `apps/desktop/plugins/messages`), driven
+// through `plow_run_command` behind an argv allowlist. It exists because the
+// traps in this store live in the SUBSTRATE, and prose cannot protect an
+// agent nobody controls: on 2026-09-14 a production agent ignored the SQL
+// recipe, queried `message.text`, and told the owner a message did not exist
+// that the agent itself had sent (#385).
 //
 // The trap, measured on a real store (2026-09-14, 498,332 messages): `text` is
 // NULL for 84% of the last 90 days' messages — the body lives in
@@ -13,9 +13,9 @@
 // common case for anything recent, which is what an owner asks about.
 //
 // Foundation decodes typedstream natively (NSUnarchiver), which is why this is
-// Swift and not TypeScript: a provider child runs under `sandbox-exec` with no
-// Node runtime, so a provider must be a self-contained executable, and the
-// alternative was hand-writing a typedstream parser.
+// Swift and not TypeScript: a plugin child gets no Node runtime, so a
+// provider must be a self-contained executable, and the alternative was
+// hand-writing a typedstream parser.
 //
 // Output is JSON Lines — one object per row, keys in a fixed order. Errors go
 // to stderr as one line: exit 2 for usage, 1 for the store.
@@ -67,7 +67,8 @@ search [PHRASE] [--handle H]... [--chat-id N] [--after ISO] [--before ISO]
   --order defaults to desc (newest first); --limit defaults to 50.
 
 thread (--chat-id N | --handle H...) [--limit N]
-  Oldest first, so the conversation reads in order. --limit defaults to 200.
+  Oldest first. --handle reads that person's DIRECT chat(s); a group needs
+  --chat-id from chats. --limit defaults to 200.
 
 chats [--limit N]
   --limit defaults to 40. `kind` is "group" or "direct"; `guid` is what a send
@@ -445,13 +446,12 @@ func runThread(_ o: Options, _ store: Store) {
     if let chatId = o.chatId {
         conditions.append("j.chat_id = \(chatId)")
     } else if !o.handles.isEmpty {
-        // Every chat the named handles appear in — a person reachable under two
-        // handles has their conversation split across them in this store.
-        conditions.append(
-            "j.chat_id in (select j2.chat_id from chat_message_join j2"
-                + " join message m2 on m2.ROWID = j2.message_id"
-                + " join handle h2 on h2.ROWID = m2.handle_id"
-                + " where h2.id in (\(o.handles.map { _ in "?" }.joined(separator: ","))))")
+        // A direct chat's identifier IS the other person's handle. Groups are
+        // deliberately out of reach here: the owner approved one person's
+        // thread, and a group is other people's conversation too — it takes
+        // --chat-id, from `chats`. Every handle is matched, because one person
+        // is often reachable under several.
+        conditions.append("c.chat_identifier in (\(o.handles.map { _ in "?" }.joined(separator: ",")))")
         params.append(contentsOf: o.handles)
     } else {
         fail("thread needs --chat-id N or --handle H (run `chats` to find one)", code: 2)
@@ -530,7 +530,7 @@ var args = Array(CommandLine.arguments.dropFirst())
 var options = Options(store: defaultStorePath(), phrase: nil)
 
 // `--store` is a GLOBAL, accepted only before the subcommand. That placement is
-// the point: the registry's argv allowlist requires argv[1] to be a
+// the point: the plugin manifest's argv allowlist requires argv[1] to be a
 // subcommand, so an agent-supplied `--store` is refused before an intent
 // exists, while a test or an operator driving the binary directly still has
 // one. The default is the owner's own store and needs no flag.

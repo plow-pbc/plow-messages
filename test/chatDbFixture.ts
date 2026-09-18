@@ -211,6 +211,15 @@ export function makeStore(dir: string): string {
       "insert into chat_message_join (chat_id, message_id) values (30, 5004);",
       "insert into chat_message_join (chat_id, message_id) values (30, 5005);",
 
+      // chat 31: the DIRECT chat with +15625550000, who also posts in group
+      // 30. `thread --handle` must read this chat and never the group. Its
+      // one row is outbound, so it is not unreplied.
+      "insert into chat (ROWID, guid, chat_identifier, display_name, style)" +
+        " values (31, 'chat-guid-31', '+15625550000', NULL, 45);",
+      `insert into message (ROWID, handle_id, date, text, is_from_me)` +
+        ` values (5101, 400, ${ns(2600)}, 'direct hello', 1);`,
+      "insert into chat_message_join (chat_id, message_id) values (31, 5101);",
+
       // plow-messages: chat 40 carries REAL typedstream bodies, captured from
       // a live store (2026-09-14, macOS 26). Both have `text` NULL and both
       // embed NUL bytes before the NSString marker — the exact shape a
@@ -235,10 +244,9 @@ export function makeStore(dir: string): string {
       "insert into chat_message_join (chat_id, message_id) values (40, 6003);",
 
       // A MALFORMED typedstream body (6004) and an attachment-only row with no
-      // body at all (6005). Both are rows a reader must survive: a message
-      // body is attacker-supplied — anyone who can text the owner chooses
-      // these bytes — and before the ObjC shim 6004 aborted the whole process
-      // rather than yielding one unreadable row.
+      // body at all (6005). Both are rows a reader must survive: a malformed
+      // body must cost one row, and before the ObjC shim 6004 aborted the
+      // whole process rather than yielding one unreadable row.
       `insert into message (ROWID, handle_id, date, text, attributedBody, is_from_me)` +
         ` values (6004, 500, ${ns(2500)}, NULL, X'040b73747265616d747970656481e800FFFFFFFFFFFF', 0);`,
       `insert into message (ROWID, handle_id, date, text, is_from_me)` +
