@@ -214,9 +214,7 @@ describe("plow-messages chats", () => {
     // style says one-to-one: kind is decided by `chat.style`, never the text.
     expect(rows.find((r) => r.chat_id === 43)).toMatchObject({ kind: "direct" });
   });
-});
 
-describe("plow-messages chats", () => {
   itMac("ranks on real messages, so a reaction cannot make a chat look active", () => {
     // chat 42 holds only a tapback and is the newest row in the store.
     expect(cli("chats").rows.map((r) => r.guid)).not.toContain("chat-guid-42");
