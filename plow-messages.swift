@@ -222,7 +222,15 @@ final class Store {
         for (i, p) in params.enumerated() {
             sqlite3_bind_text(stmt, Int32(i + 1), p, -1, transient)
         }
-        while sqlite3_step(stmt) == SQLITE_ROW { each(Row(stmt!)) }
+        var stepResult = sqlite3_step(stmt)
+        while stepResult == SQLITE_ROW {
+            each(Row(stmt!))
+            stepResult = sqlite3_step(stmt)
+        }
+        guard stepResult == SQLITE_DONE else {
+            let reason = String(cString: sqlite3_errmsg(db))
+            fail("plow-messages: reading the Messages store failed (\(reason))", code: 1)
+        }
     }
 }
 
