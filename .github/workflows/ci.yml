@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - run: npm ci
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          swiftc -O -target "$(uname -m)-apple-macos13.0" -import-objc-header plow-messages-bridge.h plow-messages.swift -o dist/plow-messages
+
+      - run: npx vitest run

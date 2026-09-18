@@ -1,0 +1,66 @@
+name: Release
+
+# A v* tag publishes a self-contained `plow-messages` for each macOS
+# architecture, in the shape Latch pins under a plugin manifest's
+# runtime.binaries (plow-pbc/latch apps/desktop/plugins/messages).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          # GitHub's last Intel image; it retires in August 2027.
+          - runner: macos-15-intel
+            arch: amd64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          swiftc -O -target "$(uname -m)-apple-macos13.0" -import-objc-header plow-messages-bridge.h plow-messages.swift -o dist/plow-messages
+
+      - name: Smoke test
+        run: |
+          dist/plow-messages --help | grep -q 'untrusted input'
+          file dist/plow-messages | grep -q "$(uname -m)"
+          # An absent store is exit 1 naming Full Disk Access, never a crash.
+          set +e; dist/plow-messages --store "$RUNNER_TEMP/absent/chat.db" chats 2>err.txt; code=$?; set -e
+          test "$code" = 1 && grep -q 'Full Disk Access' err.txt
+
+      - name: Package
+        run: tar -czf "plow-messages_${GITHUB_REF_NAME#v}_darwin_${{ matrix.arch }}.tar.gz" -C dist plow-messages
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: plow-messages-${{ matrix.arch }}
+          path: plow-messages_*.tar.gz
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          merge-multiple: true
+
+      - run: sha256sum plow-messages_*.tar.gz > checksums.txt
+
+      - run: >-
+          gh release create "$GITHUB_REF_NAME" plow-messages_*.tar.gz checksums.txt
+          --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME"
+          --prerelease=${{ contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
