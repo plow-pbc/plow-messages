@@ -235,8 +235,11 @@ describe("plow-messages chats", () => {
     const rows = cli("chats").rows;
     const deliveries = rows.find((r) => r.chat_id === 40);
     expect(deliveries).toMatchObject({ guid: "chat-guid-40", kind: "group", display_name: "Deliveries" });
-    // A chat_identifier that does not start with `chat` is a direct message.
     expect(rows.find((r) => r.chat_id === 1)).toMatchObject({ kind: "direct" });
+    // chat 43's identifier is an email handle that starts with "chat"
+    // (chatty@example.com), yet its style says one-to-one: kind is decided by
+    // `chat.style`, never guessed from the identifier's text.
+    expect(rows.find((r) => r.chat_id === 43)).toMatchObject({ kind: "direct" });
   });
 });
 
@@ -263,8 +266,11 @@ describe("plow-messages unreplied", () => {
     // chat 4's newest real row is inbound text; chat 10's and chat 41's are
     // inbound with NO readable body (a non-typedstream blob and an attachment)
     // — all three are awaiting a reply, and a reader that required a decoded
-    // body reported only the first.
-    expect(new Set(guids)).toEqual(new Set(["chat-guid-4", "chat-guid-10", "chat-guid-41"]));
+    // body reported only the first. chat 43 is a direct chat whose identifier
+    // starts with "chat" (an email handle) and must still qualify: kind is
+    // decided by `chat.style`, not by pattern-matching the identifier.
+    expect(new Set(guids)).toEqual(
+      new Set(["chat-guid-4", "chat-guid-10", "chat-guid-41", "chat-guid-43"]));
     // chat 3's newest is outbound, chat 5's is a tapback over an outbound, and
     // chat 6 is a group — none qualify.
     for (const excluded of ["chat-guid-3", "chat-guid-5", "chat-guid-6"]) {

@@ -66,8 +66,9 @@ export function makeStore(dir: string): string {
       ...SCHEMA,
 
       // Chats. 1/2 exist for the recentChats ordering + kind test; 3/4/5/6
-      // for unreplied; 10 for gather. A chat_identifier starting with 'chat'
-      // is how the real store marks a group; anything else is a direct chat.
+      // for unreplied; 10 for gather. `style` (43 group, 45 direct) is the
+      // real store's discriminator; chat 43 below is the case where a
+      // chat_identifier's text disagrees with it.
       "insert into chat (ROWID, guid, chat_identifier, display_name, style)" +
         " values (1, 'chat-guid-1', '+15551111111', NULL, 45);",
       "insert into chat (ROWID, guid, chat_identifier, display_name, style)" +
@@ -274,6 +275,18 @@ export function makeStore(dir: string): string {
       `insert into message (ROWID, handle_id, date, text, is_from_me, associated_message_type)` +
         ` values (6201, 503, ${ns(5)}, 'Loved a message', 0, 2000);`,
       "insert into chat_message_join (chat_id, message_id) values (42, 6201);",
+
+      // chat 43: a DIRECT chat (style 45) whose identifier is an email handle
+      // that happens to start with "chat" — the exact string a `chat_identifier
+      // like 'chat%'` guess misreads as a group. Its newest real message is
+      // inbound and recent, so it belongs in `unreplied` and must read as
+      // "direct" in `chats`.
+      "insert into chat (ROWID, guid, chat_identifier, display_name, style)" +
+        " values (43, 'chat-guid-43', 'chatty@example.com', NULL, 45);",
+      "insert into handle (ROWID, id) values (504, 'chatty@example.com');",
+      `insert into message (ROWID, handle_id, date, text, is_from_me)` +
+        ` values (6301, 504, ${ns(700)}, 'need a reply', 0);`,
+      "insert into chat_message_join (chat_id, message_id) values (43, 6301);",
     ].join(" "),
   ]);
   return store;

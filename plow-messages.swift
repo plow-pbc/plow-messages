@@ -33,6 +33,15 @@ let CORE_DATA_EPOCH: Double = 978_307_200
 /// The `unreplied` window, matching the SQL recipe this CLI replaces: 36h.
 let UNREPLIED_WINDOW_SECONDS = 129_600
 
+/// `chat.style`: 43 is a group, 45 a one-to-one direct chat — the explicit
+/// discriminator chat.db carries, unlike `chat_identifier`, which is free text
+/// an agent should never pattern-match. A direct chat's identifier can be an
+/// email handle that happens to start with "chat" (e.g. `chatty@example.com`),
+/// which a `like 'chat%'` guess misreads as a group; measured on a real store
+/// (2026-09-18, 5,796 chats) the guess also misreads 193 real GROUP chats as
+/// direct, because a group's identifier need not start with "chat" either.
+let GROUP_CHAT_STYLE = 43
+
 /// Real messages only, everywhere. A tapback ("Loved …") is
 /// `associated_message_type != 0` and a join/leave notice is `item_type != 0`;
 /// both read as messages the owner never received.
@@ -488,7 +497,7 @@ func runChats(_ o: Options, _ store: Store) {
     // out entirely, which is correct: nobody has said anything in it.
     let sql = """
     select c.ROWID, c.guid, c.chat_identifier, c.display_name, max(m.date),
-           case when c.chat_identifier like 'chat%' then 'group' else 'direct' end
+           case when c.style = \(GROUP_CHAT_STYLE) then 'group' else 'direct' end
       from chat c
       join chat_message_join j on j.chat_id = c.ROWID
       join message m on m.ROWID = j.message_id
@@ -519,7 +528,7 @@ func runUnreplied(_ o: Options, _ store: Store) {
     let cutoff = Int(Date().timeIntervalSince1970) - UNREPLIED_WINDOW_SECONDS
     let sql = MESSAGE_COLUMNS + """
      where \(REAL_ROWS)
-       and c.chat_identifier not like 'chat%'
+       and c.style != \(GROUP_CHAT_STYLE)
        and m.is_from_me = 0
        and m.date/1000000000 + 978307200 > \(cutoff)
        and m.ROWID = (select m2.ROWID from message m2
