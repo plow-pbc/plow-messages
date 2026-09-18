@@ -1,55 +1,32 @@
 // plow-messages — the owner's iMessage archive, read correctly.
 //
 // A Latch plugin (plow-pbc/latch `apps/desktop/plugins/messages`), driven
-// through `plow_run_command` behind an argv allowlist. It exists because the
-// traps in this store live in the SUBSTRATE, and prose cannot protect an
-// agent nobody controls: on 2026-09-14 a production agent ignored the SQL
-// recipe, queried `message.text`, and told the owner a message did not exist
-// that the agent itself had sent (#385).
-//
-// The trap, measured on a real store (2026-09-14, 498,332 messages): `text` is
-// NULL for 84% of the last 90 days' messages — the body lives in
-// `attributedBody`, a typedstream blob. It is not a tail case. It is the
-// common case for anything recent, which is what an owner asks about.
-//
-// Foundation decodes typedstream natively (NSUnarchiver), which is why this is
-// Swift and not TypeScript: a plugin child gets no Node runtime, so a
-// plugin must be a self-contained executable, and the alternative was
-// hand-writing a typedstream parser.
-//
-// Output is JSON Lines — one object per row, keys in a fixed order. Errors go
-// to stderr as one line: exit 2 for usage, 1 for the store.
+// through `plow_run_command`. Most recent message bodies live only in
+// `attributedBody`, a typedstream blob `message.text` does not carry; this is
+// Swift, not TypeScript, because Foundation's NSUnarchiver decodes it natively.
 
 import Foundation
 import SQLite3
 
-// MARK: - Constants
-
-/// Apple's epoch. `message.date` counts NANOseconds from 2001-01-01.
-/// (`ZWAMESSAGE.ZMESSAGEDATE` in the WhatsApp store next door is *seconds*
-/// from the same epoch — do not reuse this offset math there.)
+/// Apple's epoch: `message.date` counts NANOseconds from 2001-01-01 — the
+/// WhatsApp store next door shares the epoch but counts SECONDS; don't reuse
+/// this offset math there.
 let CORE_DATA_EPOCH: Double = 978_307_200
 
-/// The `unreplied` window, matching the SQL recipe this CLI replaces: 36h.
+/// The `unreplied` window: 36 hours.
 let UNREPLIED_WINDOW_SECONDS = 129_600
 
-/// `chat.style`: 43 is a group, 45 a one-to-one direct chat — the explicit
-/// discriminator chat.db carries, unlike `chat_identifier`, which is free text
-/// an agent should never pattern-match. A direct chat's identifier can be an
-/// email handle that happens to start with "chat" (e.g. `chatty@example.com`),
-/// which a `like 'chat%'` guess misreads as a group; measured on a real store
-/// (2026-09-18, 5,796 chats) the guess also misreads 193 real GROUP chats as
-/// direct, because a group's identifier need not start with "chat" either.
+/// `chat.style`: 43 is a group, 45 direct — the explicit discriminator
+/// chat.db carries, unlike `chat_identifier` (free text an agent should never
+/// pattern-match: a direct identifier can start with "chat", e.g.
+/// `chatty@example.com`).
 let GROUP_CHAT_STYLE = 43
 
-/// Real messages only, everywhere. A tapback ("Loved …") is
-/// `associated_message_type != 0` and a join/leave notice is `item_type != 0`;
-/// both read as messages the owner never received.
-///
-/// Taken on an ALIAS rather than written out, because `unreplied` needs the
-/// same predicate under a second alias inside its correlated subquery. Two
-/// hand-written copies of the rule that keeps tapbacks out of an answer is one
-/// edit away from a tapback counting as a reply.
+/// Real messages only, everywhere: a tapback ("Loved …") is
+/// `associated_message_type != 0`, a join/leave notice `item_type != 0` — both
+/// read as messages the owner never received. Taken on an alias, not written
+/// out, because `unreplied` needs the same predicate under a second alias in
+/// its correlated subquery.
 func realRows(_ alias: String) -> String {
     "\(alias).associated_message_type = 0 and \(alias).item_type = 0"
 }
@@ -105,45 +82,30 @@ EXIT
   0 success (including no rows)   1 the store could not be read   2 usage
 """
 
-// MARK: - Failure
-
-/// One line to stderr, and a code that says which half failed. Nothing from
-/// the store or from the caller's argv is interpolated into a diagnostic
-/// beyond what the caller already supplied.
+/// One line to stderr, and a code that says which half failed.
 func fail(_ message: String, code: Int32) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
     exit(code)
 }
 
-// MARK: - JSON Lines
-
 /// A nullable value as JSON wants it.
 func orNull(_ value: String?) -> Any { value ?? NSNull() }
 
-/// One row, one line.
-///
-/// `JSONSerialization` with `.sortedKeys`, not a hand-written encoder: the row
-/// shape is documented by key NAME and a JSON object is unordered by
-/// definition, so ordering the keys bought nothing and cost a bespoke string
-/// escaper — a second thing to get wrong on message text that is attacker
-/// supplied and routinely contains control bytes.
+/// One row, one line. `JSONSerialization`, not a hand-written encoder: a
+/// bespoke escaper is a second thing to get wrong on message text that is
+/// attacker-supplied and routinely contains control bytes.
 func emit(_ row: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]),
           let line = String(data: data, encoding: .utf8) else {
-        // Every value here is a String, Int64, Bool or NSNull by
-        // construction, so this is a bug in this file, not a bad message.
+        // Every value here is String/Int64/Bool/NSNull by construction — a
+        // bug in this file, not a bad message.
         fail("plow-messages: could not encode a row", code: 1)
     }
     print(line)
 }
 
-// MARK: - Dates
-
-/// ISO-8601 with this Mac's UTC offset, e.g. `2026-09-14T16:03:11-07:00`.
-///
-/// The offset is not decoration: the archive's own timestamps are absolute, and
-/// a rendered local time with no offset is ambiguous to whoever reads the row
-/// next — including an agent doing date arithmetic on it.
+/// ISO-8601 with this Mac's UTC offset (e.g. `2026-09-14T16:03:11-07:00`) —
+/// not decoration: a local time with none is ambiguous to whoever reads it next.
 let isoOut: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime]
@@ -151,8 +113,7 @@ let isoOut: ISO8601DateFormatter = {
     return f
 }()
 
-/// Parse an `--after` / `--before` argument. A bare date means local midnight,
-/// which is what someone typing `--after 2026-09-01` means.
+/// Parse an `--after`/`--before` argument; a bare date means local midnight.
 func parseBoundary(_ text: String, flag: String) -> Double {
     let full = ISO8601DateFormatter()
     full.formatOptions = [.withInternetDateTime]
@@ -168,16 +129,8 @@ func parseBoundary(_ text: String, flag: String) -> Double {
     fail("\(flag) wants an ISO-8601 date like 2026-09-01 or 2026-09-01T18:30:00-07:00", code: 2)
 }
 
-// MARK: - ASCII case folding
-
-/// Fold A-Z only.
-///
-/// Deliberately not `lowercased()`: that is Unicode- and locale-aware, so the
-/// set of strings it considers equal changes with the machine's locale and with
-/// the OS's Unicode tables. The CLI's contract — and the SQL `lower()` used as
-/// a prefilter, which folds ASCII and nothing else — is ASCII, so the
-/// authoritative check has to be ASCII too or the two disagree on the rows in
-/// between.
+/// Fold A-Z only, not `lowercased()` (Unicode/locale-aware) — must match
+/// SQL's `lower()` prefilter, which folds ASCII and nothing else.
 func asciiLower(_ s: String) -> String {
     String(String.UnicodeScalarView(s.unicodeScalars.map { scalar in
         (scalar.value >= 65 && scalar.value <= 90)
@@ -190,22 +143,17 @@ func asciiContains(_ haystack: String, _ needle: String) -> Bool {
     needle.isEmpty || asciiLower(haystack).contains(asciiLower(needle))
 }
 
-// MARK: - The store
-
-/// A read-only handle on chat.db.
-///
-/// READONLY is the whole posture: this CLI has no write subcommand, and the
-/// flag is what makes that true of the process rather than true by convention.
+/// A read-only handle on chat.db — READONLY is the whole posture: this CLI
+/// has no write subcommand.
 final class Store {
     private var db: OpaquePointer?
 
     init(path: String) {
         var handle: OpaquePointer?
-        // The store is opened by path, not by URI, so a caller cannot smuggle
-        // `?mode=rw` into it.
+        // Opened by path, not URI, so a caller cannot smuggle `?mode=rw` into it.
         if sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
-            // The path is the caller's own argument, so echoing it tells them
-            // what to fix; nothing from the store's contents appears here.
+            // The path is the caller's own argument, so echoing it helps;
+            // nothing from the store's contents appears here.
             fail(
                 "plow-messages: cannot read the Messages store at \(path). "
                     + "On a Mac this usually means Full Disk Access has not been granted to the app "
@@ -225,8 +173,8 @@ final class Store {
             fail("plow-messages: the Messages store rejected a query (\(reason))", code: 1)
         }
         defer { sqlite3_finalize(stmt) }
-        // SQLITE_TRANSIENT: sqlite copies the bytes, so the Swift String's
-        // buffer does not have to outlive the bind call.
+        // SQLITE_TRANSIENT: sqlite copies the bytes, so the String's buffer
+        // needn't outlive the bind call.
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         for (i, p) in params.enumerated() {
             sqlite3_bind_text(stmt, Int32(i + 1), p, -1, transient)
@@ -236,6 +184,8 @@ final class Store {
             each(Row(stmt!))
             stepResult = sqlite3_step(stmt)
         }
+        // A step failure (e.g. SQLITE_BUSY) must not read as "no more rows" —
+        // that would silently truncate the answer.
         guard stepResult == SQLITE_DONE else {
             let reason = String(cString: sqlite3_errmsg(db))
             fail("plow-messages: reading the Messages store failed (\(reason))", code: 1)
@@ -264,27 +214,16 @@ struct Row {
     }
 }
 
-// MARK: - The decode
-
-/// The body of a message, however this row happens to carry it.
-///
-/// `attributedBody` first, because on a modern store it is the one that is
-/// populated; `text` is the fallback for older rows and for the rare row whose
-/// blob does not unarchive. A row with neither yields nil and is dropped — it
-/// is an attachment-only or otherwise bodiless row, not a message with an empty
-/// body.
-///
-/// `NSUnarchiver` is deprecated and is nonetheless the right call: it is
-/// Foundation's decoder for the typedstream format Apple still writes here, and
-/// `NSKeyedUnarchiver` (its replacement) reads a DIFFERENT format and cannot
-/// read these blobs at all. Validated against real captured blobs, including
-/// ones with embedded NUL bytes.
+/// The body of a message, however this row carries it. `attributedBody`
+/// first, since a modern store populates it; `text` is the fallback for
+/// older rows. Neither present yields nil (bodiless, not empty).
+/// `NSUnarchiver` is deprecated and still right: it decodes the typedstream
+/// format Apple still writes here; `NSKeyedUnarchiver` reads a DIFFERENT format.
 func decodeBody(attributedBody: Data?, text: String?) -> String? {
     if let blob = attributedBody, !blob.isEmpty {
         // Through the bridging header's `@try`, never `NSUnarchiver` directly:
-        // a malformed blob RAISES rather than returning nil, and an uncaught
-        // NSException aborts the process. `plow-messages-bridge.h` has the
-        // measurement and why an attacker-supplied body makes it load-bearing.
+        // a malformed blob RAISES rather than returning nil. See
+        // plow-messages-bridge.h.
         if let object = PlowMessagesUnarchive(blob) {
             if let attributed = object as? NSAttributedString {
                 return attributed.string
@@ -297,11 +236,8 @@ func decodeBody(attributedBody: Data?, text: String?) -> String? {
     return text
 }
 
-// MARK: - Row shapes
-
-/// The message projection every read shares, so the four subcommands cannot
-/// drift on what a message row IS. Column order is the order the readers below
-/// index by; changing it changes both.
+/// The message projection every read shares, so the four subcommands can't
+/// drift on what a message row IS; column order is what the readers below index by.
 let MESSAGE_COLUMNS = """
 select m.ROWID, c.guid, c.chat_identifier, c.display_name,
        h.id, m.is_from_me, m.date, m.text, m.attributedBody
@@ -321,14 +257,9 @@ struct Message {
     let at: Double
     let body: String?
 
-    /// Never failable. A row whose body will not decode — an attachment with
-    /// no caption, or a blob the shim refused — is a message that EXISTS with
-    /// nothing to read, and dropping it is the silent omission this CLI is
-    /// here to end. It mattered most in `unreplied`, whose SQL selects exactly
-    /// one row per chat: dropping that row took the whole chat out of the
-    /// answer, so an owner with an unanswered photo saw nothing awaiting a
-    /// reply. `search` filters bodiless rows itself, where a phrase cannot
-    /// match them anyway.
+    /// Never failable: a row whose body won't decode still EXISTS, and
+    /// dropping it is the silent omission this CLI exists to end (most
+    /// visible in `unreplied`, which selects one row per chat).
     init(_ r: Row) {
         body = decodeBody(attributedBody: r.blob(8), text: r.string(7))
         rowid = r.int(0)
@@ -354,8 +285,6 @@ struct Message {
     }
 }
 
-// MARK: - Argument parsing
-
 struct Options {
     var store: String
     var phrase: String?
@@ -369,8 +298,8 @@ struct Options {
 }
 
 func defaultStorePath() -> String {
-    // `NSHomeDirectory()` is the running user's home, which is the owner's:
-    // this CLI only ever runs as a child of the owner's own Latch.
+    // The running user's home is the owner's: this CLI only ever runs as a
+    // child of the owner's own Latch.
     (NSHomeDirectory() as NSString).appendingPathComponent("Library/Messages/chat.db")
 }
 
@@ -379,31 +308,14 @@ func intArg(_ value: String, _ flag: String) -> Int64 {
     return n
 }
 
-// MARK: - Subcommands
-
 func runSearch(_ o: Options, _ store: Store) {
     var conditions = [REAL_ROWS]
     var params: [String] = []
 
-    // The phrase prefilter is an OPTIMISATION, never the decision. It runs in
-    // SQL against the raw blob bytes so the scan stays cheap (~1.3s over half a
-    // million rows), and every row it lets through is decoded and re-checked
-    // below. Two properties make it safe to rely on for narrowing:
-    //
-    //  - SQLite's string functions are length-counted, not NUL-terminated, so
-    //    `instr`/`lower` scan the WHOLE blob. (`length()` is the exception —
-    //    it stops at the first NUL — which is why it is not used here.)
-    //  - SQLite's `lower()` folds ASCII and nothing else, which is exactly the
-    //    fold `asciiLower` applies to the decoded body.
-    //
-    // A false NEGATIVE remains possible in principle, and is NOT mitigated in
-    // code: typedstream may frame a long string in pieces, so a phrase split
-    // across a frame boundary is in the decoded body but not contiguous in the
-    // blob. A rescan without the prefilter would cover it and was deliberately
-    // removed — on a real 498,332-row store it cost 11.9s against 1.3s, which
-    // made "no such message", the commonest answer, the one that blows the
-    // call budget, for a blob never observed to need it. The help text's
-    // "short distinctive fragment" advice is the whole of the protection.
+    // A SQL prefilter, not the decision: every row it passes is decoded and
+    // re-checked below, using the same ASCII fold as SQLite's `lower()`. It can
+    // rarely miss a phrase split across a typedstream frame boundary — why
+    // --help advises a short, distinctive fragment.
     if let phrase = o.phrase, !phrase.isEmpty {
         conditions.append(
             "(instr(lower(cast(m.attributedBody as text)), lower(?)) > 0"
@@ -423,16 +335,13 @@ func runSearch(_ o: Options, _ store: Store) {
     let limit = o.limit ?? 50
     let direction = o.order == "asc" ? "asc" : "desc"
 
-    /// Collect up to `limit` decoded matches, oldest/newest first per `order`.
-    ///
-    /// The SQL limit is deliberately absent: the decoded body decides, so a row
-    /// the prefilter passed can still fail the real check, and a `limit` in SQL
-    /// would silently shorten the answer rather than the result.
+    /// Collect up to `limit` decoded matches. The SQL limit is deliberately
+    /// absent: a row that passes the prefilter can still fail the real check.
     func gather(_ where_: [String], _ bound: [String]) -> [Message] {
         var found: [Message] = []
         let sql = MESSAGE_COLUMNS + " where " + where_.joined(separator: " and ")
-            // ROWID breaks a date tie, so paging with --after-rowid cannot
-            // skip or repeat a row when two share a nanosecond timestamp.
+            // ROWID breaks a date tie, so --after-rowid paging can't skip or
+            // repeat a row sharing a nanosecond timestamp.
             + " order by m.date \(direction), m.ROWID \(direction)"
         store.query(sql, bound) { row in
             guard found.count < limit else { return }
@@ -445,15 +354,6 @@ func runSearch(_ o: Options, _ store: Store) {
         return found
     }
 
-    // One pass. An earlier draft re-scanned without the prefilter whenever a
-    // search came back empty, on the theory that typedstream framing might
-    // split a phrase across a frame boundary and hide it from the byte-level
-    // match. Measured on a real 498,332-row store that rescan cost 11.9s
-    // against 1.3s for the ordinary path — it made "no such message", the
-    // commonest answer, the one that blows the call budget — and no blob was
-    // ever found that actually needed it. Hence the help text's advice to
-    // search a short distinctive fragment, which is the cheap version of the
-    // same protection.
     for m in gather(conditions, params) { m.write() }
 }
 
@@ -463,11 +363,9 @@ func runThread(_ o: Options, _ store: Store) {
     if let chatId = o.chatId {
         conditions.append("j.chat_id = \(chatId)")
     } else if !o.handles.isEmpty {
-        // A direct chat's identifier IS the other person's handle. Groups are
-        // deliberately out of reach here: the owner approved one person's
-        // thread, and a group is other people's conversation too — it takes
-        // --chat-id, from `chats`. Every handle is matched, because one person
-        // is often reachable under several.
+        // A group is other people's conversation, not the approved person's —
+        // it takes --chat-id. Every handle is matched, since one person is
+        // often reachable under several.
         conditions.append("c.chat_identifier in (\(o.handles.map { _ in "?" }.joined(separator: ",")))")
         params.append(contentsOf: o.handles)
     } else {
@@ -476,7 +374,7 @@ func runThread(_ o: Options, _ store: Store) {
 
     let limit = o.limit ?? 200
     // Newest `limit` rows, then reversed: a thread reads oldest-first, but the
-    // rows worth keeping when there are more than `limit` are the recent ones.
+    // recent rows are what's worth keeping past `limit`.
     var found: [Message] = []
     let sql = MESSAGE_COLUMNS + " where " + conditions.joined(separator: " and ")
         + " order by m.date desc, m.ROWID desc"
@@ -489,12 +387,8 @@ func runThread(_ o: Options, _ store: Store) {
 
 func runChats(_ o: Options, _ store: Store) {
     let limit = o.limit ?? 40
-    // `REAL_ROWS` here too, and it is not cosmetic: without it `max(m.date)`
-    // is the newest row of ANY kind, so a chat whose only recent activity is a
-    // tapback sorts as recently active and reports that reaction's timestamp
-    // as `last_message` — a reaction reading as a message, which is the class
-    // this CLI exists to remove. A chat holding nothing but reactions drops
-    // out entirely, which is correct: nobody has said anything in it.
+    // `REAL_ROWS` matters here too: without it, a chat whose only recent
+    // activity is a tapback would report that reaction's timestamp as `last_message`.
     let sql = """
     select c.ROWID, c.guid, c.chat_identifier, c.display_name, max(m.date),
            case when c.style = \(GROUP_CHAT_STYLE) then 'group' else 'direct' end
@@ -520,11 +414,9 @@ func runChats(_ o: Options, _ store: Store) {
 }
 
 func runUnreplied(_ o: Options, _ store: Store) {
-    // The SQL recipe this replaces, unchanged in semantics: a DIRECT chat
-    // whose newest real message is inbound, within the last 36 hours. The
-    // correlated subquery is what makes "newest" mean newest real row rather
-    // than newest row — a tapback arriving after an inbound message must not
-    // make the chat look answered.
+    // A direct chat whose newest REAL message is inbound, within the window.
+    // The correlated subquery makes "newest" mean newest real row, not newest
+    // row — a tapback after an inbound message must not look answered.
     let cutoff = Int(Date().timeIntervalSince1970) - UNREPLIED_WINDOW_SECONDS
     let sql = MESSAGE_COLUMNS + """
      where \(REAL_ROWS)
@@ -541,16 +433,12 @@ func runUnreplied(_ o: Options, _ store: Store) {
     store.query(sql, []) { row in Message(row).write() }
 }
 
-// MARK: - Entry
-
 var args = Array(CommandLine.arguments.dropFirst())
 var options = Options(store: defaultStorePath(), phrase: nil)
 
-// `--store` is a GLOBAL, accepted only before the subcommand. That placement is
-// the point: the plugin manifest's argv allowlist requires argv[1] to be a
-// subcommand, so an agent-supplied `--store` is refused before an intent
-// exists, while a test or an operator driving the binary directly still has
-// one. The default is the owner's own store and needs no flag.
+// `--store` is a GLOBAL, accepted only before the subcommand: the plugin
+// manifest's argv allowlist requires argv[1] to be a subcommand, so this
+// ordering refuses an agent-supplied `--store` before any intent exists.
 if args.first == "--store" {
     guard args.count >= 2 else { fail("--store wants a path", code: 2) }
     options.store = args[1]
@@ -593,8 +481,7 @@ while let arg = rest.first {
         exit(0)
     default:
         // A bare word is the search phrase; anything flag-shaped is a mistake
-        // worth naming rather than ignoring, because ignoring it would silently
-        // widen the answer.
+        // worth naming, since ignoring it would silently widen the answer.
         if arg.hasPrefix("-") { fail("plow-messages: unknown option \(arg) (try --help)", code: 2) }
         if options.phrase != nil {
             fail("plow-messages: search takes one phrase; quote it if it contains spaces", code: 2)
