@@ -26,6 +26,7 @@ sha256, per architecture, the same way it pins `plow-wiki`.
 ## Build & test
 
 ```sh
+npm ci
 just test
 ```
 
