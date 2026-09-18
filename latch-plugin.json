@@ -1,0 +1,25 @@
+{
+  "name": "messages",
+  "title": "iMessage history",
+  "version": "<ver>",
+  "command": "plow-messages",
+  "runtime": {
+    "binaries": [
+      {
+        "name": "plow-messages",
+        "url": {
+          "arm64": "https://github.com/plow-pbc/plow-messages/releases/download/v<ver>/plow-messages_<ver>_darwin_arm64.tar.gz",
+          "x64": "https://github.com/plow-pbc/plow-messages/releases/download/v<ver>/plow-messages_<ver>_darwin_amd64.tar.gz"
+        },
+        "sha256": { "arm64": "<sha256>", "x64": "<sha256>" }
+      }
+    ]
+  },
+  "exec": { "argv": ["plow-messages"] },
+  "env": {},
+  "argv": {
+    "read": [["search"], ["thread"], ["chats"], ["unreplied"], ["--help"]],
+    "write": []
+  },
+  "skill": "skill.md"
+}
