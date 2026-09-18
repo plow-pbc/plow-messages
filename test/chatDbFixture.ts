@@ -34,27 +34,18 @@ const sqlite = (args: string[]): string =>
 
 
 /** The chat.db-shaped schema, from a real `pragma table_info` dump — only the
- *  columns the recipes touch. Shared so an empty store and a seeded one agree. */
+ *  columns the recipes touch. */
 export const SCHEMA = [
   "create table handle (ROWID integer primary key, id text);",
   "create table chat (ROWID integer primary key, guid text, chat_identifier text," +
     " display_name text, style integer);",
   "create table message (ROWID integer primary key, guid text, text text," +
     " attributedBody blob, handle_id integer, date integer," +
-    " is_from_me integer default 0, is_sent integer default 0," +
-    " is_delivered integer default 0, error integer default 0," +
+    " is_from_me integer default 0," +
     " associated_message_type integer default 0," +
     " item_type integer default 0);",
   "create table chat_message_join (chat_id integer, message_id integer, message_date integer);",
 ];
-
-/** A store with the schema and nothing in it — for the empty-archive cases. */
-export function makeEmptyStore(dir: string): string {
-  const store = imessageStorePath(dir);
-  fs.mkdirSync(path.dirname(store), { recursive: true });
-  sqlite([store, SCHEMA.join(" ")]);
-  return store;
-}
 
 export function makeStore(dir: string): string {
   const home = dir;
@@ -83,12 +74,6 @@ export function makeStore(dir: string): string {
         " values (6, 'chat-guid-6', 'chat55555555', 'Group Six', 43);",
       "insert into chat (ROWID, guid, chat_identifier, display_name, style)" +
         " values (10, 'chat-guid-10', '+15559999999', NULL, 45);",
-      // verifySend: 20 is the direct chat behind handle 300's outbound rows;
-      // 21 is a group chat with no single participant to scope by handle.
-      "insert into chat (ROWID, guid, chat_identifier, display_name, style)" +
-        " values (20, 'chat-guid-20', '+15550009999', NULL, 45);",
-      "insert into chat (ROWID, guid, chat_identifier, display_name, style)" +
-        " values (21, 'chat-guid-21', 'chat88888888', 'Group Verify', 43);",
 
       "insert into handle (ROWID, id) values (100, '+15551111111');",
       "insert into handle (ROWID, id) values (101, 'sender-group@icloud.com');",
@@ -97,7 +82,6 @@ export function makeStore(dir: string): string {
       "insert into handle (ROWID, id) values (104, '+15554444444');",
       "insert into handle (ROWID, id) values (105, 'sender-group2@icloud.com');",
       "insert into handle (ROWID, id) values (200, 'gather-sender@icloud.com');",
-      "insert into handle (ROWID, id) values (300, 'verify@example.com');",
 
       // recentChats: chat 2 (group) is newer than chat 1 (direct).
       `insert into message (ROWID, handle_id, date, text, is_from_me)` +
@@ -141,47 +125,6 @@ export function makeStore(dir: string): string {
       "insert into chat_message_join (chat_id, message_id) values (10, 2003);",
       "insert into chat_message_join (chat_id, message_id) values (10, 2004);",
       "insert into chat_message_join (chat_id, message_id) values (10, 2005);",
-
-      // verifySend: four outbound rows for one handle (newest three are the
-      // ones a `limit 3` should return) plus a newer INBOUND row that must
-      // not appear despite being the most recent message for that handle.
-      // All four (plus the failed send below) sit in chat 20.
-      `insert into message (ROWID, handle_id, date, is_from_me, is_sent, is_delivered)` +
-        ` values (3001, 300, ${ns(100)}, 1, 1, 1);`,
-      `insert into message (ROWID, handle_id, date, is_from_me, is_sent, is_delivered)` +
-        ` values (3002, 300, ${ns(200)}, 1, 1, 0);`,
-      `insert into message (ROWID, handle_id, date, is_from_me, is_sent, is_delivered)` +
-        ` values (3003, 300, ${ns(300)}, 1, 0, 0);`,
-      `insert into message (ROWID, handle_id, date, is_from_me, is_sent, is_delivered)` +
-        ` values (3004, 300, ${ns(400)}, 1, 1, 1);`,
-      `insert into message (ROWID, handle_id, date, is_from_me)` +
-        ` values (3005, 300, ${ns(50)}, 0);`,
-      "insert into chat_message_join (chat_id, message_id) values (20, 3001);",
-      "insert into chat_message_join (chat_id, message_id) values (20, 3002);",
-      "insert into chat_message_join (chat_id, message_id) values (20, 3003);",
-      "insert into chat_message_join (chat_id, message_id) values (20, 3004);",
-      "insert into chat_message_join (chat_id, message_id) values (20, 3005);",
-
-      // verifySend probe-3 fix, scenario (a): a NEWER send that FAILED
-      // (is_sent=0) at ROWID 3010 — higher than every already-successful row
-      // above (3001..3004). A snapshot taken right before this send (ROWID
-      // 3004) must return ONLY 3010, never the older successful rows at the
-      // same handle.
-      //
-      // error=22 is the real shape of this failure: an iMessage-pinned send
-      // to a handle that is only reachable over SMS. It is what distinguishes
-      // 3010 from 3002 below, which is a genuinely-sent message still waiting
-      // on a delivery receipt (is_delivered=0, error=0).
-      `insert into message (ROWID, handle_id, date, is_from_me, is_sent, is_delivered, error)` +
-        ` values (3010, 300, ${ns(10)}, 1, 0, 0, 22);`,
-      "insert into chat_message_join (chat_id, message_id) values (20, 3010);",
-
-      // verifySend probe-3 fix, scenario (b): a group send has no single
-      // handle (handle_id is NULL — "me" isn't a handle), so it must be
-      // verifiable by chat guid alone.
-      `insert into message (ROWID, handle_id, date, is_from_me, is_sent, is_delivered)` +
-        ` values (4001, NULL, ${ns(10)}, 1, 1, 1);`,
-      "insert into chat_message_join (chat_id, message_id) values (21, 4001);",
 
       // search (latch#385): the phrase lives in `text` on a legacy row (5001),
       // ONLY in attributedBody on a modern row (5002, text NULL — the bytes
