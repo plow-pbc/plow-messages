@@ -14,7 +14,7 @@
 //
 // Foundation decodes typedstream natively (NSUnarchiver), which is why this is
 // Swift and not TypeScript: a plugin child gets no Node runtime, so a
-// provider must be a self-contained executable, and the alternative was
+// plugin must be a self-contained executable, and the alternative was
 // hand-writing a typedstream parser.
 //
 // Output is JSON Lines — one object per row, keys in a fixed order. Errors go

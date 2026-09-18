@@ -213,6 +213,8 @@ describe("plow-messages thread", () => {
     // chat 31 (5101). The approval card names a person; a group is other
     // people's conversation and needs --chat-id from `chats`.
     expect(cli("thread", "--handle", "+15625550000").rows.map((r) => r.rowid)).toEqual([5101]);
+    // Every --handle is matched, not just the first: two direct chats, oldest first.
+    expect(cli("thread", "--handle", "+15625550000", "--handle", "+15557777777").rows.map((r) => r.rowid)).toEqual([5101, 6101]);
   });
 
   itMac("reads nothing for a handle that is only ever in groups", () => {
